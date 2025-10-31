@@ -546,20 +546,13 @@ export const Go = (exports.Go = class {
 
     _makeFuncWrapper(id) {
         const go = this
-        return function () {
-            const event = { id: id, this: this, args: arguments }
+        return function (...args) {
+            const event = { id: id, this: this, args: args }
             go._pendingEvent = event
             go._resume()
             return event.result
         }
     }
 })
-
-export const exec = (wasm, args) => new Promise((resolve, reject) => {
-    const go = new Go();
-    go.exit = resolve;
-    go.argv = go.argv.concat(args || []);
-    WebAssembly.instantiate(wasm, go.importObject).then((result) => go.run(result.instance)).catch(reject);
-});
 
 export default exports
