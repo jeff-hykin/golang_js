@@ -2,24 +2,25 @@
 // Use of this source code is governed by a BSD-style license
 
 // heavily modified by Jeff Hykin 2025
-import { FS } from "./fs.js"
+
+const defaultExitFunction = (code) => {
+    if (code !== 0) {
+        console.warn("exit code:", code)
+    }
+}
 
 export class GoScaffolding {
-    constructor() {
-        this.fs = new FS()
+    constructor({ wasmAccessibleGlobals, }) {
+        this._wasmAccessibleGlobals = wasmAccessibleGlobals
         this.argv = ["js"]
         this.env = {}
-        this.exit = (code) => {
-            if (code !== 0) {
-                console.warn("exit code:", code)
-            }
-        }
         this._exitPromise = new Promise((resolve) => {
             this._resolveExitPromise = resolve
         })
         this._pendingEvent = null
         this._scheduledTimeouts = new Map()
         this._nextCallbackTimeoutID = 1
+        this._busy = false
 
         const mem = () => {
             // The buffer may change when requesting more memory.
@@ -145,7 +146,7 @@ export class GoScaffolding {
                     delete this._inst
                     delete this._values
                     delete this._refs
-                    this.exit(code)
+                    this._resolveExitPromise(code)
                 },
 
                 // func wasmWrite(fd uintptr, p unsafe.Pointer, n int32)
@@ -153,7 +154,7 @@ export class GoScaffolding {
                     const fd = getInt64(sp + 8)
                     const p = getInt64(sp + 16)
                     const n = mem().getInt32(sp + 24, true)
-                    this.fs.writeSync(fd, new Uint8Array(this._inst.exports.mem.buffer, p, n))
+                    this.wasmAccessibleGlobals.fs.writeSync(fd, new Uint8Array(this._inst.exports.mem.buffer, p, n))
                 },
 
                 // func nanotime() int64
@@ -299,8 +300,53 @@ export class GoScaffolding {
         }
     }
 
-    async run(instance) {
+    run(instance, { args, onStdout, onStderr, extraAccessibleWasmGlobals, }) {
+        if (this._busy) {
+            throw Error(`Still running previous request, do not call run while a previous run is running. Create a new instance of GoScaffolding to run multiple requests simultaneously`)
+        }
+        let stdoutChunks = []
+        let stderrChunks = []
+        this._wasmAccessibleGlobals.goStderr = (buf) => {
+            if (onStderr) {
+                try {
+                    Promise.resolve(onStderr(buf)).catch((error) => {
+                        console.error(`${(error?.message||error)}\n${error?.stack}`)
+                    })
+                } catch (error) {
+                    console.error(`${(error?.message||error)}\n${error?.stack}`)
+                }
+            }
+            stderrChunks.push(buf)
+        };
+        this._wasmAccessibleGlobals.goStdout = (buf) => {
+            if (onStdout) {
+                try {
+                    Promise.resolve(onStdout(buf)).catch((error) => {
+                        console.error(`${(error?.message||error)}\n${error?.stack}`)
+                    })
+                } catch (error) {
+                    console.error(`${(error?.message||error)}\n${error?.stack}`)
+                }
+            }
+            stdoutChunks.push(buf)
+        };
+        this._busy = true
+        this._exitPromise = new Promise((resolve) => {
+            this._resolveExitPromise = (exitCode)=>{
+                // protects against multiple calls to resolveExitPromise without multiple calls to run
+                if (this._busy) {
+                    this._busy = false
+                    resolve(exitCode)
+                }
+            }
+        })
+        
+        this.argv = this.argv.concat(args || []);
         this._inst = instance
+        let accessible = this._wasmAccessibleGlobals
+        if (extraAccessibleWasmGlobals) {
+            accessible = {...this._wasmAccessibleGlobals, ...extraAccessibleWasmGlobals}
+        }
         this._values = [
             // TODO: garbage collection
             NaN,
@@ -308,7 +354,7 @@ export class GoScaffolding {
             null,
             true,
             false,
-            exports,
+            accessible,
             this._inst.exports.mem,
             this,
         ]
@@ -348,10 +394,26 @@ export class GoScaffolding {
         })
 
         this._inst.exports.run(argc, argv)
-        if (this.exited) {
-            this._resolveExitPromise()
+        const output = {
+            exitCode: this._exitPromise,
+            stderrChunks,
+            stdoutChunks,
         }
-        await this._exitPromise
+        Object.defineProperties(output, {
+            stdoutStr: {
+                get() {
+                    const decoder = new TextDecoder("utf-8")
+                    return stdoutChunks.map(decoder.decode).join('')
+                }
+            },
+            stderrStr: {
+                get() {
+                    const decoder = new TextDecoder("utf-8")
+                    return stderrChunks.map(decoder.decode).join('')
+                }
+            },
+        })
+        return output
     }
 
     _resume() {
@@ -359,9 +421,6 @@ export class GoScaffolding {
             throw new Error("Go program has already exited")
         }
         this._inst.exports.resume()
-        if (this.exited) {
-            this._resolveExitPromise()
-        }
     }
 
     _makeFuncWrapper(id) {
@@ -375,4 +434,234 @@ export class GoScaffolding {
     }
 }
 
-export default exports
+export const defaultWasmAccessibleGlobals = {
+    readFromGoFilesystem: fs.ezRead,
+    writeToGoFilesystem: fs.ezWrite,
+    // fs: fs,
+    goStdout: (buf) => { console.log(new TextDecoder("utf-8").decode(buf))}, // TODO: make sure doesn't throw error on decoding invalid utf-8
+    goStderr: (buf) => { console.log(new TextDecoder("utf-8").decode(buf))},
+    // process: {
+    //     cwd() {
+    //         return fs.workingDirectory;
+    //     },
+    // },
+    Go: GoScaffolding,
+    
+    // normal globals
+    __defineGetter__: globalThis.__defineGetter__,
+    __defineSetter__: globalThis.__defineSetter__,
+    __lookupGetter__: globalThis.__lookupGetter__,
+    __lookupSetter__: globalThis.__lookupSetter__,
+    _error: globalThis._error,
+    AbortController: globalThis.AbortController,
+    AbortSignal: globalThis.AbortSignal,
+    addEventListener: globalThis.addEventListener,
+    AggregateError: globalThis.AggregateError,
+    alert: globalThis.alert,
+    Array: globalThis.Array,
+    ArrayBuffer: globalThis.ArrayBuffer,
+    AsyncDisposableStack: globalThis.AsyncDisposableStack,
+    atob: globalThis.atob,
+    Atomics: globalThis.Atomics,
+    BigInt: globalThis.BigInt,
+    BigInt64Array: globalThis.BigInt64Array,
+    BigUint64Array: globalThis.BigUint64Array,
+    Blob: globalThis.Blob,
+    Boolean: globalThis.Boolean,
+    btoa: globalThis.btoa,
+    Buffer: globalThis.Buffer,
+    ByteLengthQueuingStrategy: globalThis.ByteLengthQueuingStrategy,
+    Cache: globalThis.Cache,
+    caches: globalThis.caches,
+    CacheStorage: globalThis.CacheStorage,
+    clear: globalThis.clear,
+    clearImmediate: globalThis.clearImmediate,
+    clearInterval: globalThis.clearInterval,
+    clearTimeout: globalThis.clearTimeout,
+    close: globalThis.close,
+    closed: globalThis.closed,
+    CloseEvent: globalThis.CloseEvent,
+    CompressionStream: globalThis.CompressionStream,
+    confirm: globalThis.confirm,
+    console: globalThis.console,
+    constructor: globalThis.constructor,
+    CountQueuingStrategy: globalThis.CountQueuingStrategy,
+    createImageBitmap: globalThis.createImageBitmap,
+    crypto: globalThis.crypto,
+    Crypto: globalThis.Crypto,
+    CryptoKey: globalThis.CryptoKey,
+    CustomEvent: globalThis.CustomEvent,
+    DataView: globalThis.DataView,
+    Date: globalThis.Date,
+    decodeURI: globalThis.decodeURI,
+    decodeURIComponent: globalThis.decodeURIComponent,
+    DecompressionStream: globalThis.DecompressionStream,
+    dispatchEvent: globalThis.dispatchEvent,
+    DisposableStack: globalThis.DisposableStack,
+    DOMException: globalThis.DOMException,
+    encodeURI: globalThis.encodeURI,
+    encodeURIComponent: globalThis.encodeURIComponent,
+    Error: globalThis.Error,
+    ErrorEvent: globalThis.ErrorEvent,
+    escape: globalThis.escape,
+    eval: globalThis.eval,
+    EvalError: globalThis.EvalError,
+    Event: globalThis.Event,
+    EventSource: globalThis.EventSource,
+    EventTarget: globalThis.EventTarget,
+    fetch: globalThis.fetch,
+    File: globalThis.File,
+    FileReader: globalThis.FileReader,
+    FinalizationRegistry: globalThis.FinalizationRegistry,
+    Float16Array: globalThis.Float16Array,
+    Float32Array: globalThis.Float32Array,
+    Float64Array: globalThis.Float64Array,
+    FormData: globalThis.FormData,
+    Function: globalThis.Function,
+    getParent: globalThis.getParent,
+    global: globalThis.global,
+    globalThis: globalThis.globalThis,
+    GPU: globalThis.GPU,
+    GPUAdapter: globalThis.GPUAdapter,
+    GPUAdapterInfo: globalThis.GPUAdapterInfo,
+    GPUBindGroup: globalThis.GPUBindGroup,
+    GPUBindGroupLayout: globalThis.GPUBindGroupLayout,
+    GPUBuffer: globalThis.GPUBuffer,
+    GPUBufferUsage: globalThis.GPUBufferUsage,
+    GPUCanvasContext: globalThis.GPUCanvasContext,
+    GPUColorWrite: globalThis.GPUColorWrite,
+    GPUCommandBuffer: globalThis.GPUCommandBuffer,
+    GPUCommandEncoder: globalThis.GPUCommandEncoder,
+    GPUComputePassEncoder: globalThis.GPUComputePassEncoder,
+    GPUComputePipeline: globalThis.GPUComputePipeline,
+    GPUDevice: globalThis.GPUDevice,
+    GPUDeviceLostInfo: globalThis.GPUDeviceLostInfo,
+    GPUError: globalThis.GPUError,
+    GPUInternalError: globalThis.GPUInternalError,
+    GPUMapMode: globalThis.GPUMapMode,
+    GPUOutOfMemoryError: globalThis.GPUOutOfMemoryError,
+    GPUPipelineError: globalThis.GPUPipelineError,
+    GPUPipelineLayout: globalThis.GPUPipelineLayout,
+    GPUQuerySet: globalThis.GPUQuerySet,
+    GPUQueue: globalThis.GPUQueue,
+    GPURenderBundle: globalThis.GPURenderBundle,
+    GPURenderBundleEncoder: globalThis.GPURenderBundleEncoder,
+    GPURenderPassEncoder: globalThis.GPURenderPassEncoder,
+    GPURenderPipeline: globalThis.GPURenderPipeline,
+    GPUSampler: globalThis.GPUSampler,
+    GPUShaderModule: globalThis.GPUShaderModule,
+    GPUShaderStage: globalThis.GPUShaderStage,
+    GPUSupportedFeatures: globalThis.GPUSupportedFeatures,
+    GPUSupportedLimits: globalThis.GPUSupportedLimits,
+    GPUTexture: globalThis.GPUTexture,
+    GPUTextureUsage: globalThis.GPUTextureUsage,
+    GPUTextureView: globalThis.GPUTextureView,
+    GPUUncapturedErrorEvent: globalThis.GPUUncapturedErrorEvent,
+    GPUValidationError: globalThis.GPUValidationError,
+    hasOwnProperty: globalThis.hasOwnProperty,
+    Headers: globalThis.Headers,
+    ImageBitmap: globalThis.ImageBitmap,
+    ImageData: globalThis.ImageData,
+    Infinity: globalThis.Infinity,
+    Int16Array: globalThis.Int16Array,
+    Int32Array: globalThis.Int32Array,
+    Int8Array: globalThis.Int8Array,
+    Intl: globalThis.Intl,
+    isFinite: globalThis.isFinite,
+    isNaN: globalThis.isNaN,
+    isPrototypeOf: globalThis.isPrototypeOf,
+    Iterator: globalThis.Iterator,
+    JSON: globalThis.JSON,
+    localStorage: globalThis.localStorage,
+    location: globalThis.location,
+    Location: globalThis.Location,
+    Map: globalThis.Map,
+    Math: globalThis.Math,
+    MessageChannel: globalThis.MessageChannel,
+    MessageEvent: globalThis.MessageEvent,
+    MessagePort: globalThis.MessagePort,
+    name: globalThis.name,
+    NaN: globalThis.NaN,
+    navigator: globalThis.navigator,
+    Navigator: globalThis.Navigator,
+    Number: globalThis.Number,
+    Object: globalThis.Object,
+    onbeforeunload: globalThis.onbeforeunload,
+    onerror: globalThis.onerror,
+    onload: globalThis.onload,
+    onunhandledrejection: globalThis.onunhandledrejection,
+    onunload: globalThis.onunload,
+    parseFloat: globalThis.parseFloat,
+    parseInt: globalThis.parseInt,
+    performance: globalThis.performance,
+    Performance: globalThis.Performance,
+    PerformanceEntry: globalThis.PerformanceEntry,
+    PerformanceMark: globalThis.PerformanceMark,
+    PerformanceMeasure: globalThis.PerformanceMeasure,
+    process: globalThis.process,
+    ProgressEvent: globalThis.ProgressEvent,
+    Promise: globalThis.Promise,
+    PromiseRejectionEvent: globalThis.PromiseRejectionEvent,
+    prompt: globalThis.prompt,
+    propertyIsEnumerable: globalThis.propertyIsEnumerable,
+    Proxy: globalThis.Proxy,
+    queueMicrotask: globalThis.queueMicrotask,
+    RangeError: globalThis.RangeError,
+    ReadableByteStreamController: globalThis.ReadableByteStreamController,
+    ReadableStream: globalThis.ReadableStream,
+    ReadableStreamBYOBReader: globalThis.ReadableStreamBYOBReader,
+    ReadableStreamBYOBRequest: globalThis.ReadableStreamBYOBRequest,
+    ReadableStreamDefaultController: globalThis.ReadableStreamDefaultController,
+    ReadableStreamDefaultReader: globalThis.ReadableStreamDefaultReader,
+    ReferenceError: globalThis.ReferenceError,
+    Reflect: globalThis.Reflect,
+    RegExp: globalThis.RegExp,
+    removeEventListener: globalThis.removeEventListener,
+    reportError: globalThis.reportError,
+    Request: globalThis.Request,
+    Response: globalThis.Response,
+    self: globalThis.self,
+    sessionStorage: globalThis.sessionStorage,
+    Set: globalThis.Set,
+    setImmediate: globalThis.setImmediate,
+    setInterval: globalThis.setInterval,
+    setTimeout: globalThis.setTimeout,
+    SharedArrayBuffer: globalThis.SharedArrayBuffer,
+    Storage: globalThis.Storage,
+    String: globalThis.String,
+    structuredClone: globalThis.structuredClone,
+    SubtleCrypto: globalThis.SubtleCrypto,
+    SuppressedError: globalThis.SuppressedError,
+    Symbol: globalThis.Symbol,
+    SyntaxError: globalThis.SyntaxError,
+    TextDecoder: globalThis.TextDecoder,
+    TextDecoderStream: globalThis.TextDecoderStream,
+    TextEncoder: globalThis.TextEncoder,
+    TextEncoderStream: globalThis.TextEncoderStream,
+    toLocaleString: globalThis.toLocaleString,
+    toString: globalThis.toString,
+    TransformStream: globalThis.TransformStream,
+    TransformStreamDefaultController: globalThis.TransformStreamDefaultController,
+    TypeError: globalThis.TypeError,
+    Uint16Array: globalThis.Uint16Array,
+    Uint32Array: globalThis.Uint32Array,
+    Uint8Array: globalThis.Uint8Array,
+    Uint8ClampedArray: globalThis.Uint8ClampedArray,
+    undefined: globalThis.undefined,
+    unescape: globalThis.unescape,
+    URIError: globalThis.URIError,
+    URL: globalThis.URL,
+    URLPattern: globalThis.URLPattern,
+    URLSearchParams: globalThis.URLSearchParams,
+    valueOf: globalThis.valueOf,
+    WeakMap: globalThis.WeakMap,
+    WeakRef: globalThis.WeakRef,
+    WeakSet: globalThis.WeakSet,
+    WebAssembly: globalThis.WebAssembly,
+    WebSocket: globalThis.WebSocket,
+    Window: globalThis.Window,
+    Worker: globalThis.Worker,
+    WritableStream: globalThis.WritableStream,
+    WritableStreamDefaultController: globalThis.WritableStreamDefaultController,
+    WritableStreamDefaultWriter: globalThis.WritableStreamDefaultWriter,
+}
