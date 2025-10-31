@@ -1,12 +1,9 @@
-import uint8ArrayForRuntimeA    from "./compiled_files/runtime.a.binaryified.js"
-import uint8ArrayForBytealgA    from "./compiled_files/internal/bytealg.a.binaryified.js"
-import uint8ArrayForCpuA        from "./compiled_files/internal/cpu.a.binaryified.js"
-import uint8ArrayForAtomicA     from "./compiled_files/runtime/internal/atomic.a.binaryified.js"
-import uint8ArrayForMathA       from "./compiled_files/runtime/internal/math.a.binaryified.js"
-import uint8ArrayForSysA        from "./compiled_files/runtime/internal/sys.a.binaryified.js"
-import uint8ArrayForCompileWasm from "./compiled_files/wasm/compile.wasm.binaryified.js"
-import uint8ArrayForGofmtWasm   from "./compiled_files/wasm/gofmt.wasm.binaryified.js"
-import uint8ArrayForLinkWasm    from "./compiled_files/wasm/link.wasm.binaryified.js"
+import uint8ArrayForRuntimeA    from "../compiled_files/runtime.a.binaryified.js"
+import uint8ArrayForBytealgA    from "../compiled_files/internal/bytealg.a.binaryified.js"
+import uint8ArrayForCpuA        from "../compiled_files/internal/cpu.a.binaryified.js"
+import uint8ArrayForAtomicA     from "../compiled_files/runtime/internal/atomic.a.binaryified.js"
+import uint8ArrayForMathA       from "../compiled_files/runtime/internal/math.a.binaryified.js"
+import uint8ArrayForSysA        from "../compiled_files/runtime/internal/sys.a.binaryified.js"
 
 import { FS } from "./fs.js"
 
