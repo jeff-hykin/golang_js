@@ -1,8 +1,8 @@
 import { FS } from "./fs.js"
-import { GoScaffolding, defaultWasmAccessibleGlobals } from "./go_scaffolding.js"
+import { GoRunner, defaultWasmAccessibleGlobals } from "./go_runner.js"
 import { wasmBytes } from "something"
 
-const goScaffolding = new GoScaffolding({
+const goScaffolding = new GoRunner({
     wasmAccessibleGlobals: {
         ...defaultWasmAccessibleGlobals,
         // TODO: is the default fs needed? (e.g. files for go compiler)
