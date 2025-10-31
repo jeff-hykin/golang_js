@@ -1,16 +1,21 @@
 export class FS {
+    constants = {
+        O_WRONLY: 1 << 0,
+        O_RDWR: 1 << 1,
+        O_CREAT: 1 << 2,
+        O_TRUNC: 1 << 3,
+        O_APPEND: 1 << 4,
+        O_EXCL: 1 << 5,
+    }
     constructor(options = {}) {
-        this.encoder = new TextEncoder("utf-8");
-        this.decoder = new TextDecoder("utf-8");
-
-        this.filesystem = {};
-        this.workingDirectory = "/";
-        this.openFiles = new Map();
+        this._filesystemObj = {};
+        this._openFiles = new Map();
+        this._workingDirectory = "/";
         this.nextFd = 1000;
 
         // Allow custom stdout/stderr per FS instance
-        this.goStdout = options.goStdout || (() => {});
-        this.goStderr = options.goStderr || (() => {});
+        this.stdoutCallback = options.stdoutCallback || (() => {});
+        this.stderrCallback = options.stderrCallback || (() => {});
 
         // Bind methods to preserve `this`
         this.writeSync = this.writeSync.bind(this);
@@ -26,35 +31,32 @@ export class FS {
         this.fchmod = this.fchmod.bind(this);
     }
 
+    clone() {
+        const fs = new FS()
+        Object.assign(fs, this)
+        fs._filesystemObj = Object.assign({}, this._filesystemObj)
+        fs._openFiles = new Map(this._openFiles)
+        return fs
+    }
+
     absPath(path) {
         if (path[0] === "/") {
             return path;
         }
-        return this.workingDirectory + path.replace(/^\.\//, "");
+        return this._workingDirectory + path.replace(/^\.\//, "");
     }
 
-    readFromGoFilesystem(path) {
-        return this.filesystem[this.absPath(path)];
+    ezRead(path) {
+        return this._filesystemObj[this.absPath(path)];
     }
 
-    writeToGoFilesystem(path, content) {
+    ezWrite(path, content) {
         const abs = this.absPath(path);
         if (typeof content === "string") {
-            this.filesystem[abs] = this.encoder.encode(content);
+            this._filesystemObj[abs] = new TextEncoder("utf-8").encode(content);
         } else {
-            this.filesystem[abs] = content;
+            this._filesystemObj[abs] = content;
         }
-    }
-
-    get constants() {
-        return {
-            O_WRONLY: 1 << 0,
-            O_RDWR: 1 << 1,
-            O_CREAT: 1 << 2,
-            O_TRUNC: 1 << 3,
-            O_APPEND: 1 << 4,
-            O_EXCL: 1 << 5,
-        };
     }
 
     stat(path, callback) {
@@ -63,7 +65,7 @@ export class FS {
 
         if (abs === "/") {
             mode |= 0x80000000; // directory flag
-        } else if (this.filesystem[abs] === undefined) {
+        } else if (this._filesystemObj[abs] === undefined) {
             const err = new Error("no such file");
             err.code = "ENOENT";
             callback(err);
@@ -78,7 +80,7 @@ export class FS {
             uid: 0,
             gid: 0,
             rdev: 0,
-            size: this.filesystem[abs]?.length || 0,
+            size: this._filesystemObj[abs]?.length || 0,
             blksize: 0,
             blocks: 0,
             atimeMs: 0,
@@ -90,17 +92,17 @@ export class FS {
 
     writeSync(fd, buf) {
         if (fd === 1) {
-            this.goStdout(buf);
+            this.stdoutCallback(buf);
             return buf.length;
         } else if (fd === 2) {
-            this.goStderr(buf);
+            this.stderrCallback(buf);
             return buf.length;
         }
 
-        const file = this.openFiles.get(fd);
+        const file = this._openFiles.get(fd);
         if (!file) throw new Error("Bad file descriptor");
 
-        const source = this.filesystem[file.path] || new Uint8Array(0);
+        const source = this._filesystemObj[file.path] || new Uint8Array(0);
         let destLength = source.length + buf.length;
 
         if (file.offset < source.length) {
@@ -112,7 +114,7 @@ export class FS {
         dest.set(buf, file.offset);
 
         file.offset += buf.length;
-        this.filesystem[file.path] = dest;
+        this._filesystemObj[file.path] = dest;
 
         return buf.length;
     }
@@ -122,7 +124,7 @@ export class FS {
             throw new Error("write not fully implemented: " + offset + ", " + length + "/" + buf.length);
         }
         if (position !== null) {
-            const file = this.openFiles.get(fd);
+            const file = this._openFiles.get(fd);
             if (file) file.offset = position;
         }
         try {
@@ -135,10 +137,10 @@ export class FS {
 
     open(path, flags, mode, callback) {
         const abs = this.absPath(path);
-        let fileExists = !!this.filesystem[abs];
+        let fileExists = !!this._filesystemObj[abs];
 
         if (!fileExists && (flags & this.constants.O_CREAT)) {
-            this.filesystem[abs] = new Uint8Array(0);
+            this._filesystemObj[abs] = new Uint8Array(0);
             fileExists = true;
         } else if (!fileExists) {
             const err = new Error("no such file");
@@ -147,11 +149,11 @@ export class FS {
         }
 
         if (flags & this.constants.O_TRUNC) {
-            this.filesystem[abs] = new Uint8Array(0);
+            this._filesystemObj[abs] = new Uint8Array(0);
         }
 
         const fd = this.nextFd++;
-        this.openFiles.set(fd, {
+        this._openFiles.set(fd, {
             offset: 0,
             path: abs,
         });
@@ -164,14 +166,14 @@ export class FS {
             throw new Error("read not fully implemented: " + offset);
         }
 
-        const file = this.openFiles.get(fd);
+        const file = this._openFiles.get(fd);
         if (!file) return callback(new Error("Bad file descriptor"));
 
         if (position !== null) {
             file.offset = position;
         }
 
-        const source = this.filesystem[file.path] || new Uint8Array(0);
+        const source = this._filesystemObj[file.path] || new Uint8Array(0);
         let n = Math.min(length, source.length - file.offset);
 
         if (n > 0) {
@@ -183,7 +185,7 @@ export class FS {
     }
 
     close(fd, callback) {
-        this.openFiles.delete(fd);
+        this._openFiles.delete(fd);
         callback(null);
     }
 
@@ -193,12 +195,12 @@ export class FS {
 
     unlink(path, callback) {
         const abs = this.absPath(path);
-        delete this.filesystem[abs];
+        delete this._filesystemObj[abs];
         callback(null);
     }
 
     fstat(fd, callback) {
-        const file = this.openFiles.get(fd);
+        const file = this._openFiles.get(fd);
         if (!file) return callback(new Error("Bad file descriptor"));
         this.stat(file.path, callback);
     }
@@ -216,14 +218,14 @@ export class FS {
     }
 
     get cwd() {
-        return this.workingDirectory;
+        return this._workingDirectory;
     }
 
     set cwd(dir) {
         if (dir.endsWith("/")) {
-            this.workingDirectory = dir;
+            this._workingDirectory = dir;
         } else {
-            this.workingDirectory = dir + "/";
+            this._workingDirectory = dir + "/";
         }
     }
 
@@ -253,9 +255,9 @@ export class FS {
 
     // Optional: reset instance
     reset() {
-        this.filesystem = {};
-        this.openFiles.clear();
+        this._filesystemObj = {};
+        this._openFiles.clear();
         this.nextFd = 1000;
-        this.workingDirectory = "/";
+        this._workingDirectory = "/";
     }
 }
