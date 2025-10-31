@@ -350,6 +350,12 @@ export class GoRunner {
         if (extraAccessibleWasmGlobals) {
             accessible = {...this._wasmAccessibleGlobals, ...extraAccessibleWasmGlobals}
         }
+        // TODO:
+        // might need to add these to the accessible globals (do it if stuff fails)
+            // fs.filesystem
+            // fs.openFiles
+            // fs.workingDirectory
+            // fs.nextFd
         this._values = [
             // TODO: garbage collection
             NaN,
