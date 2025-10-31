@@ -531,7 +531,6 @@ _deps
 
 # Libraries
 *.lib
-*.a
 *.la
 *.lo
 
@@ -589,7 +588,6 @@ dkms.conf
 # Compiled Static libraries
 *.lai
 *.la
-*.a
 *.lib
 
 # Executables
