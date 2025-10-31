@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+binaryify -- compiled_files/**/*.a compiled_files/**/*.wasm 
