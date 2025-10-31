@@ -9,7 +9,7 @@ const defaultExitFunction = (code) => {
     }
 }
 
-export class GoScaffolding {
+export class GoRunner {
     constructor({ wasmAccessibleGlobals, }) {
         this._wasmAccessibleGlobals = wasmAccessibleGlobals
         this.argv = ["js"]
@@ -302,8 +302,9 @@ export class GoScaffolding {
 
     run(instance, { args, onStdout, onStderr, extraAccessibleWasmGlobals, }) {
         if (this._busy) {
-            throw Error(`Still running previous request, do not call run while a previous run is running. Create a new instance of GoScaffolding to run multiple requests simultaneously`)
+            throw Error(`Still running previous request, do not call run while a previous run is running. Create a new instance of GoRunner to run multiple requests simultaneously`)
         }
+        let combinedChunks = []
         let stdoutChunks = []
         let stderrChunks = []
         this._wasmAccessibleGlobals.goStderr = (buf) => {
@@ -316,6 +317,7 @@ export class GoScaffolding {
                     console.error(`${(error?.message||error)}\n${error?.stack}`)
                 }
             }
+            combinedChunks.push(buf)
             stderrChunks.push(buf)
         };
         this._wasmAccessibleGlobals.goStdout = (buf) => {
@@ -328,6 +330,7 @@ export class GoScaffolding {
                     console.error(`${(error?.message||error)}\n${error?.stack}`)
                 }
             }
+            combinedChunks.push(buf)
             stdoutChunks.push(buf)
         };
         this._busy = true
@@ -398,6 +401,7 @@ export class GoScaffolding {
             exitCode: this._exitPromise,
             stderrChunks,
             stdoutChunks,
+            combinedChunks,
         }
         Object.defineProperties(output, {
             stdoutStr: {
@@ -410,6 +414,12 @@ export class GoScaffolding {
                 get() {
                     const decoder = new TextDecoder("utf-8")
                     return stderrChunks.map(decoder.decode).join('')
+                }
+            },
+            combinedStr: {
+                get() {
+                    const decoder = new TextDecoder("utf-8")
+                    return combinedChunks.map(decoder.decode).join('')
                 }
             },
         })
@@ -445,7 +455,7 @@ export const defaultWasmAccessibleGlobals = {
     //         return fs.workingDirectory;
     //     },
     // },
-    Go: GoScaffolding,
+    Go: GoRunner,
     
     // normal globals
     __defineGetter__: globalThis.__defineGetter__,
