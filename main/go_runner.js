@@ -350,6 +350,8 @@ export class GoRunner {
         if (extraAccessibleWasmGlobals) {
             accessible = {...this._wasmAccessibleGlobals, ...extraAccessibleWasmGlobals}
         }
+        accessible.readFromGoFilesystem = accessible.fs.ezRead
+        accessible.writeToGoFilesystem = accessible.fs.ezWrite
         // TODO:
         // might need to add these to the accessible globals (do it if stuff fails)
             // fs.filesystem
@@ -451,8 +453,8 @@ export class GoRunner {
 }
 
 export const defaultWasmAccessibleGlobals = {
-    readFromGoFilesystem: fs.ezRead,
-    writeToGoFilesystem: fs.ezWrite,
+    // readFromGoFilesystem: fs.ezRead,
+    // writeToGoFilesystem: fs.ezWrite,
     // fs: fs,
     goStdout: (buf) => { console.log(new TextDecoder("utf-8").decode(buf))}, // TODO: make sure doesn't throw error on decoding invalid utf-8
     goStderr: (buf) => { console.log(new TextDecoder("utf-8").decode(buf))},
